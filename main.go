@@ -39,7 +39,6 @@ var (
 func requireAuth(header string) (events.APIGatewayProxyResponse, error) {
 	parts := strings.Split(header, " ")
 	if (len(parts) != 2) || parts[0] != "Bearer" || subtle.ConstantTimeCompare([]byte(parts[1]), []byte(authToken)) == 0 {
-		level.Debug(logger).Log("msg", errInvalidToken)
 		return events.APIGatewayProxyResponse{StatusCode: http.StatusForbidden, Body: errInvalidToken.Error()}, errInvalidToken
 	}
 	return events.APIGatewayProxyResponse{}, nil
@@ -53,7 +52,7 @@ func handle(ctx context.Context, request events.APIGatewayProxyRequest) (events.
 		confp      = request.QueryStringParameters["config"]
 	)
 	if len(proberp) < 1 {
-		return events.APIGatewayProxyResponse{StatusCode: http.StatusBadRequest}, errInvalidPath
+		return events.APIGatewayProxyResponse{StatusCode: http.StatusBadRequest, Body: errInvalidPath.Error()}, nil
 	}
 	proberp = proberp[1:]
 	logger := log.With(logger, "target", target, "prober", proberp)
@@ -61,7 +60,8 @@ func handle(ctx context.Context, request events.APIGatewayProxyRequest) (events.
 
 	res, err := requireAuth(authHeader)
 	if err != nil {
-		return res, err
+		level.Debug(logger).Log("msg", err.Error())
+		return res, nil // Do not return an error to send 401 back.
 	}
 
 	registry := prometheus.NewRegistry()
@@ -70,29 +70,33 @@ func handle(ctx context.Context, request events.APIGatewayProxyRequest) (events.
 	switch proberp {
 	case "http":
 		if err := yaml.Unmarshal([]byte(confp), &module.HTTP); err != nil {
-			return responseConfigInvalid, err
+			level.Debug(logger).Log("msg", err.Error())
+			return responseConfigInvalid, nil
 		}
 		prober.ProbeHTTP(ctx, target, module, registry, logger)
 	case "tcp":
 		if err := yaml.Unmarshal([]byte(confp), &module.TCP); err != nil {
-			return responseConfigInvalid, err
+			level.Debug(logger).Log("msg", err.Error())
+			return responseConfigInvalid, nil
 		}
 		prober.ProbeTCP(ctx, target, module, registry, logger)
 	case "dns":
 		if err := yaml.Unmarshal([]byte(confp), &module.DNS); err != nil {
-			return responseConfigInvalid, err
+			level.Debug(logger).Log("msg", err.Error())
+			return responseConfigInvalid, nil
 		}
 		prober.ProbeDNS(ctx, target, module, registry, logger)
 	case "icmp":
 		if err := yaml.Unmarshal([]byte(confp), &module.ICMP); err != nil {
-			return responseConfigInvalid, err
+			level.Debug(logger).Log("msg", err.Error())
+			return responseConfigInvalid, nil
 		}
 		prober.ProbeICMP(ctx, target, module, registry, logger)
 	default:
 		return events.APIGatewayProxyResponse{
 			StatusCode: http.StatusBadRequest,
 			Body:       "Prober " + proberp + " does not exist",
-		}, errInvalidProber
+		}, nil
 	}
 
 	mfs, err := registry.Gather()
