@@ -33,11 +33,10 @@ upload: $(BUNDLE)
 
 cfn:
 	aws cloudformation $(OP) \
-  	--capabilities CAPABILITY_IAM \
- 		--stack-name $(STACK_NAME) \
-  	--parameters ParameterKey=FirstRun,ParameterValue=$(FIRST_RUN) \
-		--parameters ParameterKey=AuthToken,ParameterValue=$(AUTH_TOKEN) \
-  	--template-body "$$(cat cfn/site.yml)"
+  --capabilities CAPABILITY_IAM \
+  --stack-name $(STACK_NAME) \
+  --parameters ParameterKey=FirstRun,ParameterValue=$(FIRST_RUN) ParameterKey=AuthToken,ParameterValue=$(AUTH_TOKEN) \
+  --template-body "$$(cat cfn/site.yml)"
 
 new:
 	make cfn OP=create-stack FIRST_RUN=true

@@ -152,6 +152,7 @@ Outputs:
   LambdaArn:
     Description: Probe Lambda ARN
     Value: !Ref Prober
+    Condition: NotOnFirstRun
   Endpoint:
     Description: Use this endpoint to send requests to. Append the prober to use.
     Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/probe/"
