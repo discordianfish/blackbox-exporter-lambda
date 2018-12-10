@@ -1,0 +1,157 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  CodeBucketPrefix:
+    Type: String
+    Default: blackbox-exporter-
+    Description: Code bucket prefix to use. Will get AccountID appended.
+  FirstRun:
+    Type: String
+    AllowedValues:
+      - true
+      - false
+    Default: false
+    Description: Set on first run to skip Lambda creation
+  AuthToken:
+    Type: String
+    Description: "Auth Token to require in Authorization header. Format: Bearer This-Token"
+    NoEcho: true
+Conditions:
+  NotOnFirstRun:
+    !Equals [ !Ref FirstRun, false ]
+
+Resources:
+  ### Code Bucket ###
+  ProberCodeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${CodeBucketPrefix}${AWS::AccountId}"
+
+  ### Lambda ###
+  LambdaRole:
+      Type: "AWS::IAM::Role"
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: lambda.amazonaws.com
+              Action: "sts:AssumeRole"
+        Policies:
+          - PolicyName: "root"
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - "ec2:DescribeNetworkInterfaces"
+                    - "ec2:CreateNetworkInterface"
+                    - "ec2:DeleteNetworkInterface"
+                  Resource: "*"
+                - Effect: Allow
+                  Action:
+                    - "logs:CreateLogGroup"
+                    - "logs:CreateLogStream"
+                    - "logs:PutLogEvents"
+                  Resource: "arn:aws:logs:*:*:*"
+
+  Prober:
+    Type: AWS::Lambda::Function
+    Condition: NotOnFirstRun
+    Properties:
+      Handler: handler
+      Role: !GetAtt LambdaRole.Arn
+      Runtime: go1.x
+      Timeout: 15
+      Code:
+        S3Bucket: !Ref ProberCodeBucket
+        S3Key: handler.zip
+      Environment:
+        Variables:
+          AUTH_TOKEN: !Ref AuthToken
+
+  LambdaPermission:
+    Type: AWS::Lambda::Permission
+    Condition: NotOnFirstRun
+    Properties:
+      Action: 'lambda:InvokeFunction'
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*
+      FunctionName: !Sub arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${Prober}
+      Principal: apigateway.amazonaws.com
+
+  CloudwatchRole:
+      Type: "AWS::IAM::Role"
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: apigateway.amazonaws.com
+              Action: "sts:AssumeRole"
+        ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  ### ApiGateway ###
+  ApiGatewayAccount:
+    Type: "AWS::ApiGateway::Account"
+    Properties:
+      CloudWatchRoleArn: !GetAtt CloudwatchRole.Arn
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: api
+
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    Condition: NotOnFirstRun
+    DependsOn:
+      - Method
+    Properties:
+      RestApiId: !Ref ApiGateway
+
+  ProbeStage:
+    Type: AWS::ApiGateway::Stage
+    DependsOn:
+      - ApiGatewayAccount
+    Condition: NotOnFirstRun
+    Properties:
+      StageName: probe
+      Description: Default Stage
+      RestApiId: !Ref ApiGateway
+      DeploymentId: !Ref ApiDeployment
+      MethodSettings:
+        - DataTraceEnabled: true
+          HttpMethod: "*"
+          LoggingLevel: INFO
+          ResourcePath: "/*"
+
+  ProbeResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ParentId: !GetAtt [ApiGateway, RootResourceId]
+      PathPart: '{proxy+}'
+
+  Method:
+    Type: AWS::ApiGateway::Method
+    Condition: NotOnFirstRun
+    Properties:
+      RestApiId: !Ref ApiGateway
+      ResourceId: !Ref ProbeResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Prober.Arn}/invocations
+
+Outputs:
+  LambdaArn:
+    Description: Probe Lambda ARN
+    Value: !Ref Prober
+  Endpoint:
+    Description: Use this endpoint to send requests to. Append the prober to use.
+    Value: !Sub "https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/probe/"
